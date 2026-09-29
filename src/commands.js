@@ -29,11 +29,10 @@ export const command = {
     {
       type: SUB,
       name: 'setup',
-      description: 'Admin: set the quest board channel, GM role and timezone',
+      description: 'Admin: set the quest board channel and GM role',
       options: [
         { type: CHANNEL, name: 'board', description: 'Where quests get posted', channel_types: [0] },
         { type: ROLE, name: 'gm_role', description: 'Role that can see every party channel and close quests' },
-        { type: STRING, name: 'timezone', description: "Your group's timezone, e.g. America/New_York (used for scheduling)" },
       ],
     },
   ],

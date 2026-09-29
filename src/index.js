@@ -1,7 +1,7 @@
 import { api, hasPerm, P, verifyRequest } from './discord.js';
 import * as quest from './quest.js';
 import * as store from './store.js';
-import { bestWindows, DEFAULT_TIMEZONE, isValidTimezone, SESSION_HOURS } from './schedule.js';
+import { bestWindows, SESSION_HOURS } from './schedule.js';
 
 const PING = 1, COMMAND = 2, COMPONENT = 3;
 const PONG = 1, MESSAGE = 4, DEFER_MESSAGE = 5, DEFER_UPDATE = 6, UPDATE = 7;
@@ -63,15 +63,10 @@ async function onCommand(i, env, ctx) {
     const cfg = await store.config(env, i.guild_id);
     if (opts.board) cfg.boardChannelId = opts.board;
     if (opts.gm_role) cfg.gmRoleId = opts.gm_role;
-    if (opts.timezone) {
-      if (!isValidTimezone(opts.timezone)) return reply(`"${opts.timezone}" isn't a valid timezone. Use a name like America/New_York or Asia/Manila.`);
-      cfg.timezone = opts.timezone;
-    }
     await store.saveConfig(env, i.guild_id, cfg);
     return reply(
       `Board: ${cfg.boardChannelId ? `<#${cfg.boardChannelId}>` : 'wherever /quest create is used'}\n` +
-        `GM role: ${cfg.gmRoleId ? `<@&${cfg.gmRoleId}>` : 'none'}\n` +
-        `Timezone: ${cfg.timezone ?? `${DEFAULT_TIMEZONE} (default)`}`,
+        `GM role: ${cfg.gmRoleId ? `<@&${cfg.gmRoleId}>` : 'none'}`,
     );
   }
 
@@ -160,8 +155,7 @@ async function onButton(i, env, ctx) {
       if (!me) return reply('Only party members can do that.');
       if (q.status !== 'launched') return reply('This quest has no party channel.');
       if (q.crab) return reply(`The availability grid already exists: ${q.crab.url}`);
-      const cfg = await store.config(env, q.guildId);
-      background(ctx, env, i, quest.createSchedule(env, q, cfg.timezone ?? DEFAULT_TIMEZONE));
+      background(ctx, env, i, quest.createSchedule(env, q));
       return { type: DEFER_UPDATE };
     }
     case 'results':

@@ -3,21 +3,12 @@
 const CRAB_API = 'https://api.crab.fit';
 export const CRAB_URL = 'https://crab.fit';
 
-export const DEFAULT_TIMEZONE = 'Asia/Singapore'; // used until /quest setup sets one
+const TIMEZONE = 'Asia/Manila'; // the group's timezone; slot hours below are in this zone
 const DAYS = 14; // how far ahead the grid runs
-const FIRST_HOUR = 10; // earliest slot start, in the guild's timezone
+const FIRST_HOUR = 10; // earliest slot start
 const LAST_HOUR = 23; // latest slot start (23:00 -> midnight)
 export const SESSION_HOURS = 3; // window length used when looking for the best time
 const HOUR = 3600_000;
-
-export const isValidTimezone = (tz) => {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 function zoneParts(epoch, tz) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -77,8 +68,8 @@ async function crab(method, path, body) {
   return res.json();
 }
 
-export async function createEvent(name, tz) {
-  const ev = await crab('POST', '/event', { name, times: buildSlots(tz), timezone: tz });
+export async function createEvent(name) {
+  const ev = await crab('POST', '/event', { name, times: buildSlots(TIMEZONE), timezone: TIMEZONE });
   return { id: ev.id, url: `${CRAB_URL}/${ev.id}` };
 }
 

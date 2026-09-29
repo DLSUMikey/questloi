@@ -104,10 +104,18 @@ export async function launch(env, q) {
   await api(env, 'POST', `/channels/${text.id}/messages`, {
     content:
       `**${q.title}** is a go! ${q.players.map((p) => `<@${p.id}>`).join(' ')}\n` +
-      `Sort out the details here. Press **Find a time** to get an availability grid for the next two weeks. ` +
-      `When the quest is done, the host (or a GM) can run \`/quest close\` to tidy these channels up.`,
-    components: [{ type: 1, components: [button(q, 'findtime', '📅 Find a time', SUCCESS)] }],
+      `Sort out the details here. When the quest is done, the host (or a GM) can run \`/quest close\` to tidy these channels up.`,
   });
+  try {
+    await createSchedule(env, q);
+  } catch (err) {
+    // Crab Fit being down shouldn't break the launch; let the party retry from a button.
+    console.warn(`Could not create availability grid for quest ${q.id}:`, err.message);
+    await api(env, 'POST', `/channels/${text.id}/messages`, {
+      content: "I couldn't create the availability grid just now. Press the button to try again.",
+      components: [{ type: 1, components: [button(q, 'findtime', '📅 Find a time', SUCCESS)] }],
+    });
+  }
   await refreshBoard(env, q);
 }
 
@@ -124,8 +132,8 @@ export async function teardown(env, q) {
 }
 
 /** Create the availability grid and post it (with a results button) in the party channel. */
-export async function createSchedule(env, q, timezone) {
-  q.crab = await createEvent(q.title, timezone);
+export async function createSchedule(env, q) {
+  q.crab = await createEvent(q.title);
   await store.save(env, q);
   await api(env, 'POST', `/channels/${q.textChannelId}/messages`, {
     content:

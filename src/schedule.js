@@ -76,8 +76,8 @@ export async function createEvent(name) {
 }
 
 /**
- * Best `hours`-long windows, by how many people are free for the whole window.
- * Overlapping windows are collapsed so the top results are genuinely different options.
+ * Start times where EVERYONE who filled in the grid is free for the whole `hours`-long window.
+ * Overlapping windows are collapsed so the results are genuinely different options.
  */
 export async function bestWindows(eventId, hours = DEFAULT_HOURS, limit = 3) {
   const people = await crab('GET', `/event/${eventId}/people`);
@@ -92,9 +92,8 @@ export async function bestWindows(eventId, hours = DEFAULT_HOURS, limit = 3) {
     if (start <= now) continue;
     const keys = Array.from({ length: hours }, (_, n) => slotKey(start + n * HOUR));
     const names = free.filter((p) => keys.every((k) => p.slots.has(k))).map((p) => p.name);
-    if (names.length) candidates.push({ start, names });
+    if (names.length === people.length) candidates.push({ start, names });
   }
-  candidates.sort((a, b) => b.names.length - a.names.length || a.start - b.start);
 
   const picked = [];
   for (const c of candidates) {

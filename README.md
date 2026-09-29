@@ -10,7 +10,13 @@ Discord bot for West Marches quest coordination, hosted on Cloudflare Workers.
    category with a text and voice channel visible only to the party (and the GM role).
    The host can also force-launch early.
 4. Late joiners (if there's room) are added to the channels automatically.
-5. The host or a GM runs `/quest close` in the quest channel to delete everything.
+5. The party gets a read-only schedule channel with an availability grid ([Crab Fit](https://crab.fit)).
+   The panel shows the windows where **everyone** is free (default 4 hours, adjustable). The host or a GM
+   confirms one, which posts a Google Calendar link and creates a Discord event.
+6. When the quest is done, the host or a GM runs `/quest close` in the quest channel to delete everything.
+7. Optional: if the players want to stay together for another quest, the host or a GM presses **New session**
+   on the schedule panel instead. That clears the date and starts a fresh grid; the channels stay.
+   Close them with `/quest close` whenever the party finally breaks up.
 
 Admins run `/quest setup board:#quest-board gm_role:@GM` once.
 

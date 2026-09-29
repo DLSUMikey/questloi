@@ -156,6 +156,11 @@ async function onButton(i, env, ctx) {
       background(ctx, env, i, quest.confirm(env, q, Number(arg)));
       return { type: DEFER_UPDATE };
     }
+    case 'newsession':
+      if (!isGM(i, q, await store.config(env, q.guildId))) return reply('Only the host or a GM can start a new session.');
+      if (q.status !== 'launched') return reply('This party has no channels.');
+      background(ctx, env, i, quest.newSession(env, q));
+      return { type: DEFER_UPDATE };
     case 'launch':
       if (userId !== q.hostId) return reply('Only the host can do that.');
       if (q.status !== 'open') return reply('Already launched.');

@@ -131,16 +131,7 @@ export async function launch(env, q) {
       `Sort out the details here, and mark your availability in <#${schedule.id}>. ` +
       `When the quest is done, the host (or a GM) can run \`/quest close\` to tidy these channels up.`,
   });
-  try {
-    await createSchedule(env, q);
-  } catch (err) {
-    // Crab Fit being down shouldn't break the launch; let the party retry from a button.
-    console.warn(`Could not create availability grid for quest ${q.id}:`, err.message);
-    await api(env, 'POST', `/channels/${schedule.id}/messages`, {
-      content: "I couldn't create the availability grid just now. Press the button to try again.",
-      components: [{ type: 1, components: [button(q, 'findtime', '📅 Find a time', SUCCESS)] }],
-    });
-  }
+  await createScheduleOrFallback(env, q);
   await refreshBoard(env, q);
 }
 
@@ -170,17 +161,21 @@ function scheduleMessage(q, { responded, windows }) {
 
   const rows = windows.map((w, n) => {
     const from = Math.floor(w.start / 1000);
-    return `${n + 1}. <t:${from}:F> to <t:${from + hours * 3600}:t> (${w.names.length}/${responded}: ${w.names.join(', ')})`;
+    return `${n + 1}. <t:${from}:F> to <t:${from + hours * 3600}:t>`;
   });
+  const party = q.players.length;
   let body;
   if (!responded) body = 'Nobody has filled in the grid yet.';
-  else if (!rows.length) body = `${responded} responded, but nobody shares a free ${hours}-hour block yet.`;
-  else body = `**Best ${hours}-hour windows** (${responded} responded)\n${rows.join('\n')}`;
+  else if (!rows.length) {
+    body = `No ${hours}-hour window where everyone is free yet. Try a shorter session, or have people add more availability.`;
+  } else body = `**${hours}-hour windows where everyone is free**\n${rows.join('\n')}`;
+  if (responded && responded < party) body += `\n⏳ Only ${responded} of ${party} have filled in the grid, so these only count those ${responded}.`;
 
   const controls = [
     button(q, 'shorter', '− 1 hour', SECONDARY, '', hours <= MIN_HOURS),
     button(q, 'longer', '+ 1 hour', SECONDARY, '', hours >= MAX_HOURS),
     button(q, 'refresh', '🔄 Refresh', PRIMARY),
+    button(q, 'newsession', '🆕 New session (host)', SECONDARY),
   ];
   const components = [{ type: 1, components: controls }];
   if (windows.length) {
@@ -192,7 +187,7 @@ function scheduleMessage(q, { responded, windows }) {
   }
 
   return {
-    content: `${head.join('\n')}\n\n${body}\n\n-# Session length: ${hours}h. Use the buttons to change it. Only the host or a GM can confirm a time.`,
+    content: `${head.join('\n')}\n\n${body}\n\n-# Session length: ${hours}h. Use the buttons to change it. Only the host or a GM can confirm a time. Staying together for another quest? The host can press New session.`,
     components,
   };
 }
@@ -204,6 +199,43 @@ export async function createSchedule(env, q) {
   const msg = await api(env, 'POST', `/channels/${scheduleChannel(q)}/messages`, scheduleMessage(q, { responded: 0, windows: [] }));
   q.scheduleMessageId = msg.id;
   await store.save(env, q);
+}
+
+/** Crab Fit being down shouldn't break a launch or reset; the party can retry from a button. */
+async function createScheduleOrFallback(env, q) {
+  try {
+    await createSchedule(env, q);
+  } catch (err) {
+    console.warn(`Could not create availability grid for quest ${q.id}:`, err.message);
+    await api(env, 'POST', `/channels/${scheduleChannel(q)}/messages`, {
+      content: "I couldn't create the availability grid just now. Press the button to try again.",
+      components: [{ type: 1, components: [button(q, 'findtime', '📅 Find a time', SUCCESS)] }],
+    });
+  }
+}
+
+/** Optional: a party that stays together after a quest starts over on scheduling. Drops the confirmed date and its event, archive the old grid, start a fresh one. */
+export async function newSession(env, q) {
+  if (q.confirmed?.eventId) await api(env, 'DELETE', `/guilds/${q.guildId}/scheduled-events/${q.confirmed.eventId}`).catch(() => {});
+
+  if (q.crab && q.scheduleMessageId) {
+    const past = q.confirmed ? `<t:${Math.floor(q.confirmed.start / 1000)}:F>` : 'never scheduled';
+    await api(env, 'PATCH', `/channels/${scheduleChannel(q)}/messages/${q.scheduleMessageId}`, {
+      content: `📁 **Past session** (${past})
+Grid: ${q.crab.url}`,
+      components: [],
+    }).catch(() => {});
+  }
+
+  q.crab = null;
+  q.confirmed = null;
+  q.scheduleMessageId = null;
+  await store.save(env, q);
+
+  await api(env, 'POST', `/channels/${q.textChannelId}/messages`, {
+    content: `🆕 New session time! Mark your availability in <#${scheduleChannel(q)}>. ${q.players.map((p) => `<@${p.id}>`).join(' ')}`,
+  });
+  await createScheduleOrFallback(env, q);
 }
 
 /** Recompute the best windows and edit the results panel in place. */
@@ -248,9 +280,16 @@ export async function confirm(env, q, start) {
   });
   await api(env, 'POST', `/channels/${q.textChannelId}/messages`, {
     content:
-      `✅ **${q.title}** is set for <t:${s}:F> to <t:${s + hours * 3600}:t> (<t:${s}:R>). ${q.players.map((p) => `<@${p.id}>`).join(' ')}\n` +
-      `📆 [Add to Google Calendar](<${gcal}>)` +
-      (eventId ? '\nI also made a Discord event for it. Press **Interested** on it to get a reminder.' : ''),
+      `✅ **${q.title}** is set for <t:${s}:F> to <t:${s + hours * 3600}:t> (<t:${s}:R>). ` +
+      `${q.players.map((p) => `<@${p.id}>`).join(' ')}\nAdd it to your calendar from <#${scheduleChannel(q)}>.`,
+  });
+  await api(env, 'POST', `/channels/${scheduleChannel(q)}/messages`, {
+    content:
+      `📆 **${q.title}**: <t:${s}:F> to <t:${s + hours * 3600}:t>\n` +
+      `[Add to Google Calendar](<${gcal}>)` +
+      (eventId
+        ? `\n[Open the Discord event](<https://discord.com/events/${q.guildId}/${eventId}>) and press **Interested** to get a reminder.`
+        : ''),
   });
   await refreshSchedule(env, q);
 }

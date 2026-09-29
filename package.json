@@ -1,0 +1,14 @@
+{
+  "name": "dndbot",
+  "version": "1.0.0",
+  "description": "Discord bot for coordinating West Marches quest parties",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js"
+  },
+  "engines": { "node": ">=20.6" },
+  "dependencies": {
+    "discord.js": "^14.16.0"
+  }
+}

@@ -1,23 +1,33 @@
-const fs = require('node:fs');
-const path = require('node:path');
+// KV layout:
+//   config:<guildId>                          -> { boardChannelId, gmRoleId }
+//   quest:<id>                                -> quest
+//   channel:<textChannelId>                   -> quest id, while launched
+//   open:<guildId>:<hostId>:<createdAt>:<id>  -> '1', while open (lets /quest edit find the host's latest)
+const kv = (env) => env.QUEST_KV;
 
-const FILE = path.join(__dirname, '..', 'data', 'db.json');
+export const config = async (env, guildId) => (await kv(env).get(`config:${guildId}`, 'json')) ?? {};
+export const saveConfig = (env, guildId, cfg) => kv(env).put(`config:${guildId}`, JSON.stringify(cfg));
 
-let db = { config: {}, quests: {} };
-try {
-  db = { ...db, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) };
-} catch {}
+export const get = (env, id) => kv(env).get(`quest:${id}`, 'json');
 
-function save() {
-  fs.mkdirSync(path.dirname(FILE), { recursive: true });
-  fs.writeFileSync(FILE, JSON.stringify(db, null, 2));
+export async function save(env, q) {
+  const openKey = `open:${q.guildId}:${q.hostId}:${q.createdAt}:${q.id}`;
+  const ops = [kv(env).put(`quest:${q.id}`, JSON.stringify(q))];
+  ops.push(q.status === 'open' ? kv(env).put(openKey, '1') : kv(env).delete(openKey));
+  if (q.textChannelId) {
+    const key = `channel:${q.textChannelId}`;
+    ops.push(q.status === 'launched' ? kv(env).put(key, q.id) : kv(env).delete(key));
+  }
+  await Promise.all(ops);
 }
 
-module.exports = {
-  save,
-  config: (guildId) => (db.config[guildId] ??= {}),
-  quests: () => db.quests,
-  get: (id) => db.quests[id],
-  byChannel: (channelId) =>
-    Object.values(db.quests).find((q) => q.textChannelId === channelId && q.status === 'launched'),
-};
+export async function byChannel(env, channelId) {
+  const id = await kv(env).get(`channel:${channelId}`);
+  return id ? get(env, id) : null;
+}
+
+export async function latestOpenByHost(env, guildId, hostId) {
+  const { keys } = await kv(env).list({ prefix: `open:${guildId}:${hostId}:` });
+  const last = keys.at(-1);
+  return last ? get(env, last.name.split(':').at(-1)) : null;
+}

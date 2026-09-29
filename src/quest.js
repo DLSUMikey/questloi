@@ -1,147 +1,133 @@
-const {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ChannelType,
-  EmbedBuilder,
-  PermissionFlagsBits: P,
-} = require('discord.js');
-const store = require('./store');
+import { api, bits, P } from './discord.js';
+import * as store from './store.js';
 
 const COLORS = { open: 0x5865f2, launched: 0x57f287, cancelled: 0x808080, closed: 0x808080 };
+const PRIMARY = 1, SECONDARY = 2, SUCCESS = 3, DANGER = 4;
+const TEXT = 0, VOICE = 2, CATEGORY = 4;
+const ROLE = 0, MEMBER = 1;
+
+const PLAYER_PERMS = bits(P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.Connect, P.Speak, P.AttachFiles, P.EmbedLinks);
 
 function embed(q) {
   const lines = q.players.map((p) => {
     const mark = q.status === 'open' ? (p.ready ? '✅' : '⏳') : '⚔️';
     return `${mark} <@${p.id}>${p.id === q.hostId ? ' (host)' : ''}`;
   });
-  const cap = `/${q.max}`;
-  const e = new EmbedBuilder()
-    .setTitle(`🗺️ ${q.title}`)
-    .setColor(COLORS[q.status])
-    .setDescription(q.description || '*No description.*')
-    .addFields(
+  const e = {
+    title: `🗺️ ${q.title}`,
+    color: COLORS[q.status],
+    description: q.description || '*No description.*',
+    fields: [
       { name: 'Party size', value: `max ${q.max}`, inline: true },
-      { name: `Adventurers (${q.players.length}${cap})`, value: lines.join('\n') || '—' },
-    );
+      { name: `Adventurers (${q.players.length}/${q.max})`, value: lines.join('\n') || '—' },
+    ],
+  };
 
   if (q.status === 'open') {
-    e.setFooter({
+    e.footer = {
       text: `Launches automatically when the party is full (${q.max}) and everyone is ✅ Ready. The host can also launch early.`,
-    });
+    };
   } else if (q.status === 'launched') {
-    e.addFields({ name: 'Party channels', value: `<#${q.textChannelId}> · <#${q.voiceChannelId}>` });
+    e.fields.push({ name: 'Party channels', value: `<#${q.textChannelId}> · <#${q.voiceChannelId}>` });
   } else {
-    e.setFooter({ text: q.status === 'cancelled' ? 'Cancelled by the host.' : 'Quest complete.' });
+    e.footer = { text: q.status === 'cancelled' ? 'Cancelled by the host.' : 'Quest complete.' };
   }
   return e;
 }
 
+const button = (q, action, label, style) => ({ type: 2, style, label, custom_id: `quest:${action}:${q.id}` });
+
 function buttons(q) {
-  const id = (a) => `quest:${a}:${q.id}`;
   if (q.status === 'open') {
     return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(id('join')).setLabel('Join').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(id('ready')).setLabel('Ready').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(id('leave')).setLabel('Leave').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(id('launch')).setLabel('Launch now (host)').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId(id('cancel')).setLabel('Cancel (host)').setStyle(ButtonStyle.Danger),
-      ),
+      {
+        type: 1,
+        components: [
+          button(q, 'join', 'Join', PRIMARY),
+          button(q, 'ready', 'Ready', SUCCESS),
+          button(q, 'leave', 'Leave', SECONDARY),
+          button(q, 'launch', 'Launch now (host)', SECONDARY),
+          button(q, 'cancel', 'Cancel (host)', DANGER),
+        ],
+      },
     ];
   }
   if (q.status === 'launched') {
     // Latecomers can still hop in while there's room.
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(id('join')).setLabel('Join').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(id('leave')).setLabel('Leave').setStyle(ButtonStyle.Secondary),
-      ),
-    ];
+    return [{ type: 1, components: [button(q, 'join', 'Join', PRIMARY), button(q, 'leave', 'Leave', SECONDARY)] }];
   }
   return [];
 }
 
-const render = (q) => ({ embeds: [embed(q)], components: buttons(q) });
+export const render = (q) => ({ embeds: [embed(q)], components: buttons(q) });
 
-async function refreshBoard(client, q) {
+export async function refreshBoard(env, q) {
   try {
-    const ch = await client.channels.fetch(q.boardChannelId);
-    const msg = await ch.messages.fetch(q.messageId);
-    await msg.edit(render(q));
+    await api(env, 'PATCH', `/channels/${q.boardChannelId}/messages/${q.messageId}`, render(q));
   } catch (err) {
     console.warn(`Could not refresh board message for quest ${q.id}:`, err.message);
   }
 }
 
-function playerOverwrite(userId) {
-  return {
-    id: userId,
-    allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.Connect, P.Speak, P.AttachFiles, P.EmbedLinks],
-  };
-}
+export const shouldAutoLaunch = (q) =>
+  q.status === 'open' && q.max && q.players.length >= q.max && q.players.every((p) => p.ready);
 
-function shouldAutoLaunch(q) {
-  return q.status === 'open' && q.max && q.players.length >= q.max && q.players.every((p) => p.ready);
-}
-
-async function launch(client, q) {
-  const guild = await client.guilds.fetch(q.guildId);
-  const cfg = store.config(q.guildId);
+export async function launch(env, q) {
+  const cfg = await store.config(env, q.guildId);
   const slug = q.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'quest';
 
   const overwrites = [
-    { id: guild.roles.everyone.id, deny: [P.ViewChannel] },
-    { id: client.user.id, allow: [P.ViewChannel, P.SendMessages, P.ManageChannels, P.Connect] },
-    ...q.players.map((p) => playerOverwrite(p.id)),
+    { id: q.guildId, type: ROLE, deny: bits(P.ViewChannel) }, // @everyone shares the guild's id
+    { id: env.DISCORD_APP_ID, type: MEMBER, allow: bits(P.ViewChannel, P.SendMessages, P.ManageChannels, P.Connect) },
+    ...q.players.map((p) => ({ id: p.id, type: MEMBER, allow: PLAYER_PERMS })),
   ];
-  if (cfg.gmRoleId) overwrites.push({ id: cfg.gmRoleId, allow: [P.ViewChannel, P.SendMessages, P.Connect, P.Speak, P.ManageMessages, P.MuteMembers] });
+  if (cfg.gmRoleId) {
+    overwrites.push({
+      id: cfg.gmRoleId,
+      type: ROLE,
+      allow: bits(P.ViewChannel, P.SendMessages, P.Connect, P.Speak, P.ManageMessages, P.MuteMembers),
+    });
+  }
 
-  const category = await guild.channels.create({
-    name: `⚔️ ${q.title}`.slice(0, 100),
-    type: ChannelType.GuildCategory,
-    permissionOverwrites: overwrites,
-  });
-  const text = await guild.channels.create({ name: slug, type: ChannelType.GuildText, parent: category.id });
-  const voice = await guild.channels.create({ name: `${slug}-voice`.slice(0, 100), type: ChannelType.GuildVoice, parent: category.id });
+  const create = (body) => api(env, 'POST', `/guilds/${q.guildId}/channels`, body);
+  const category = await create({ name: `⚔️ ${q.title}`.slice(0, 100), type: CATEGORY, permission_overwrites: overwrites });
+  const text = await create({ name: slug, type: TEXT, parent_id: category.id });
+  const voice = await create({ name: `${slug}-voice`.slice(0, 100), type: VOICE, parent_id: category.id });
 
   q.status = 'launched';
   q.categoryId = category.id;
   q.textChannelId = text.id;
   q.voiceChannelId = voice.id;
-  store.save();
+  await store.save(env, q);
 
-  await text.send(
-    `**${q.title}** is a go! ${q.players.map((p) => `<@${p.id}>`).join(' ')}\n` +
+  await api(env, 'POST', `/channels/${text.id}/messages`, {
+    content:
+      `**${q.title}** is a go! ${q.players.map((p) => `<@${p.id}>`).join(' ')}\n` +
       `Sort out the details here. When the quest is done, the host (or a GM) can run \`/quest close\` to tidy these channels up.`,
-  );
-  await refreshBoard(client, q);
+  });
+  await refreshBoard(env, q);
 }
 
-async function teardown(client, q) {
+export async function teardown(env, q) {
   for (const id of [q.textChannelId, q.voiceChannelId, q.categoryId]) {
     if (!id) continue;
     try {
-      await (await client.channels.fetch(id)).delete();
+      await api(env, 'DELETE', `/channels/${id}`);
     } catch {}
   }
   q.status = 'closed';
-  store.save();
-  await refreshBoard(client, q);
+  await store.save(env, q);
+  await refreshBoard(env, q);
 }
 
 /** Give or remove a player's access to already-launched channels. */
-async function syncAccess(client, q, userId, grant) {
+export async function syncAccess(env, q, userId, grant) {
   try {
-    const category = await client.channels.fetch(q.categoryId);
-    if (grant) await category.permissionOverwrites.edit(userId, Object.fromEntries(
-      ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'Connect', 'Speak', 'AttachFiles', 'EmbedLinks'].map((k) => [k, true]),
-    ));
-    else await category.permissionOverwrites.delete(userId);
+    const path = `/channels/${q.categoryId}/permissions/${userId}`;
+    if (grant) await api(env, 'PUT', path, { type: MEMBER, allow: PLAYER_PERMS });
+    else await api(env, 'DELETE', path);
     // Child channels sync from the category unless overridden, so nothing else to do.
   } catch (err) {
     console.warn('syncAccess failed:', err.message);
   }
 }
-
-module.exports = { render, refreshBoard, shouldAutoLaunch, launch, teardown, syncAccess };

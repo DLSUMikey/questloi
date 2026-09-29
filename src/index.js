@@ -1,201 +1,171 @@
-const {
-  Client,
-  GatewayIntentBits,
-  MessageFlags,
-  PermissionFlagsBits,
-  SlashCommandBuilder,
-  ChannelType,
-} = require('discord.js');
-const crypto = require('node:crypto');
-const store = require('./store');
-const quest = require('./quest');
+import { api, hasPerm, P, verifyRequest } from './discord.js';
+import * as quest from './quest.js';
+import * as store from './store.js';
 
-const command = new SlashCommandBuilder()
-  .setName('quest')
-  .setDescription('West Marches quest coordination')
-  .addSubcommand((s) =>
-    s
-      .setName('create')
-      .setDescription('Post a quest and gather a party')
-      .addStringOption((o) => o.setName('title').setDescription('Quest name').setRequired(true).setMaxLength(80))
-      .addStringOption((o) => o.setName('description').setDescription('Hook, location, level range, etc.').setMaxLength(1000))
-      .addIntegerOption((o) => o.setName('max').setDescription('Max party size (default 5)').setMinValue(1).setMaxValue(25))
-  )
-  .addSubcommand((s) =>
-    s
-      .setName('edit')
-      .setDescription('Change your quest (run in the quest channel, or anywhere for your latest open quest)')
-      .addStringOption((o) => o.setName('title').setDescription('New quest name').setMaxLength(80))
-      .addStringOption((o) => o.setName('description').setDescription('New description').setMaxLength(1000))
-      .addIntegerOption((o) => o.setName('max').setDescription('New max party size').setMinValue(1).setMaxValue(25))
-  )
-  .addSubcommand((s) => s.setName('close').setDescription('End this quest and delete its party channels (run inside the quest channel)'))
-  .addSubcommand((s) =>
-    s
-      .setName('setup')
-      .setDescription('Admin: set the quest board channel and GM role')
-      .addChannelOption((o) => o.setName('board').setDescription('Where quests get posted').addChannelTypes(ChannelType.GuildText))
-      .addRoleOption((o) => o.setName('gm_role').setDescription('Role that can see every party channel and close quests')),
-  );
+const PING = 1, COMMAND = 2, COMPONENT = 3;
+const PONG = 1, MESSAGE = 4, DEFER_UPDATE = 6, UPDATE = 7;
+const EPHEMERAL = 64;
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const ERROR_MSG = 'Something went wrong. Check that I have Manage Channels and Manage Roles permissions.';
 
-client.once('clientReady', async () => {
-  const guildId = process.env.GUILD_ID;
-  if (guildId) await (await client.guilds.fetch(guildId)).commands.set([command]);
-  else await client.application.commands.set([command]);
-  console.log(`Logged in as ${client.user.tag}`);
-});
+const reply = (content) => ({ type: MESSAGE, data: { content, flags: EPHEMERAL } });
 
-const reply = (i, content) => i.reply({ content, flags: MessageFlags.Ephemeral });
-
-function isGM(i, q) {
-  const gmRole = store.config(q.guildId).gmRoleId;
-  return (
-    i.user.id === q.hostId ||
-    i.memberPermissions.has(PermissionFlagsBits.ManageGuild) ||
-    (gmRole && i.member.roles.cache.has(gmRole))
+/** Run slow work after the 3s interaction deadline; report failures to the user. */
+function background(ctx, env, i, work) {
+  ctx.waitUntil(
+    work.catch(async (err) => {
+      console.error(err);
+      await api(env, 'POST', `/webhooks/${env.DISCORD_APP_ID}/${i.token}`, { content: ERROR_MSG, flags: EPHEMERAL }).catch(() => {});
+    }),
   );
 }
 
-async function onCommand(i) {
-  const sub = i.options.getSubcommand();
+function isGM(i, q, cfg) {
+  return (
+    i.member.user.id === q.hostId ||
+    hasPerm(i.member.permissions, P.ManageGuild) ||
+    (cfg.gmRoleId && i.member.roles.includes(cfg.gmRoleId))
+  );
+}
 
-  if (sub === 'setup') {
-    if (!i.memberPermissions.has(PermissionFlagsBits.ManageGuild)) return reply(i, 'You need Manage Server for that.');
-    const cfg = store.config(i.guildId);
-    const board = i.options.getChannel('board');
-    const role = i.options.getRole('gm_role');
-    if (board) cfg.boardChannelId = board.id;
-    if (role) cfg.gmRoleId = role.id;
-    store.save();
+async function onCommand(i, env, ctx) {
+  const sub = i.data.options[0];
+  const opts = Object.fromEntries((sub.options ?? []).map((o) => [o.name, o.value]));
+  const userId = i.member.user.id;
+
+  if (sub.name === 'setup') {
+    if (!hasPerm(i.member.permissions, P.ManageGuild)) return reply('You need Manage Server for that.');
+    const cfg = await store.config(env, i.guild_id);
+    if (opts.board) cfg.boardChannelId = opts.board;
+    if (opts.gm_role) cfg.gmRoleId = opts.gm_role;
+    await store.saveConfig(env, i.guild_id, cfg);
     return reply(
-      i,
       `Board: ${cfg.boardChannelId ? `<#${cfg.boardChannelId}>` : 'wherever /quest create is used'}\n` +
         `GM role: ${cfg.gmRoleId ? `<@&${cfg.gmRoleId}>` : 'none'}`,
     );
   }
 
-  if (sub === 'edit') {
-    const q =
-      store.byChannel(i.channelId) ??
-      Object.values(store.quests())
-        .filter((x) => x.hostId === i.user.id && x.guildId === i.guildId && x.status === 'open')
-        .pop();
-    if (!q) return reply(i, 'No open quest of yours found. Run this in a quest channel, or create a quest first.');
-    if (!isGM(i, q)) return reply(i, 'Only the host or a GM can edit this quest.');
+  if (sub.name === 'edit') {
+    const q = (await store.byChannel(env, i.channel_id)) ?? (await store.latestOpenByHost(env, i.guild_id, userId));
+    if (!q) return reply('No open quest of yours found. Run this in a quest channel, or create a quest first.');
+    if (!isGM(i, q, await store.config(env, q.guildId))) return reply('Only the host or a GM can edit this quest.');
 
-    const title = i.options.getString('title');
-    const description = i.options.getString('description');
-    const max = i.options.getInteger('max') ?? q.max;
+    const max = opts.max ?? q.max;
+    if (max < q.players.length) return reply(`There are already ${q.players.length} players; max can't be lower.`);
 
-    if (max < q.players.length) return reply(i, `There are already ${q.players.length} players; max can't be lower.`);
-
-    if (title) q.title = title;
-    if (description) q.description = description;
+    if (opts.title) q.title = opts.title;
+    if (opts.description) q.description = opts.description;
     q.max = max;
-    store.save();
+    await store.save(env, q);
 
-    await reply(i, `Updated **${q.title}**.`);
-    if (quest.shouldAutoLaunch(q)) return quest.launch(client, q);
-    return quest.refreshBoard(client, q);
+    background(ctx, env, i, quest.shouldAutoLaunch(q) ? quest.launch(env, q) : quest.refreshBoard(env, q));
+    return reply(`Updated **${q.title}**.`);
   }
 
-  if (sub === 'close') {
-    const q = store.byChannel(i.channelId);
-    if (!q) return reply(i, 'Run this inside an active quest channel.');
-    if (!isGM(i, q)) return reply(i, 'Only the host or a GM can close this quest.');
-    await reply(i, 'Closing quest and deleting channels...');
-    return quest.teardown(client, q);
+  if (sub.name === 'close') {
+    const q = await store.byChannel(env, i.channel_id);
+    if (!q) return reply('Run this inside an active quest channel.');
+    if (!isGM(i, q, await store.config(env, q.guildId))) return reply('Only the host or a GM can close this quest.');
+    background(ctx, env, i, quest.teardown(env, q));
+    return reply('Closing quest and deleting channels...');
   }
 
   // create
-  const cfg = store.config(i.guildId);
-  const max = i.options.getInteger('max') ?? 5;
-
+  const cfg = await store.config(env, i.guild_id);
   const q = {
-    id: crypto.randomBytes(4).toString('hex'),
-    guildId: i.guildId,
-    hostId: i.user.id,
-    title: i.options.getString('title'),
-    description: i.options.getString('description'),
-    max,
+    id: [...crypto.getRandomValues(new Uint8Array(4))].map((b) => b.toString(16).padStart(2, '0')).join(''),
+    guildId: i.guild_id,
+    hostId: userId,
+    title: opts.title,
+    description: opts.description ?? null,
+    max: opts.max ?? 5,
     status: 'open',
-    players: [{ id: i.user.id, ready: true }],
+    createdAt: Date.now(),
+    players: [{ id: userId, ready: true }],
   };
 
-  const board = cfg.boardChannelId ? await client.channels.fetch(cfg.boardChannelId).catch(() => null) : null;
-  const channel = board ?? i.channel;
-  let msg;
-  try {
-    msg = await channel.send(quest.render(q));
-  } catch {
-    return reply(i, `I can't post in ${channel}. Give me View/Send/Embed permissions there.`);
+  // Prefer the configured board; fall back to the current channel if it's gone or unpostable.
+  const candidates = [...new Set([cfg.boardChannelId, i.channel_id].filter(Boolean))];
+  for (const channelId of candidates) {
+    try {
+      const msg = await api(env, 'POST', `/channels/${channelId}/messages`, quest.render(q));
+      q.boardChannelId = channelId;
+      q.messageId = msg.id;
+      await store.save(env, q);
+      return reply(`Quest posted in <#${channelId}>.`);
+    } catch (err) {
+      console.warn(`Could not post quest in ${channelId}:`, err.message);
+    }
   }
-  q.boardChannelId = channel.id;
-  q.messageId = msg.id;
-  store.quests()[q.id] = q;
-  store.save();
-  return reply(i, `Quest posted in ${channel}.`);
+  return reply(`I can't post in <#${candidates.at(-1)}>. Give me View/Send/Embed permissions there.`);
 }
 
-async function onButton(i) {
-  const [, action, id] = i.customId.split(':');
-  const q = store.get(id);
-  if (!q || q.status === 'closed' || q.status === 'cancelled') return reply(i, 'This quest is no longer active.');
+async function onButton(i, env, ctx) {
+  const [, action, id] = i.data.custom_id.split(':');
+  const q = await store.get(env, id);
+  if (!q || q.status === 'closed' || q.status === 'cancelled') return reply('This quest is no longer active.');
 
-  const me = q.players.find((p) => p.id === i.user.id);
+  const userId = i.member.user.id;
+  const me = q.players.find((p) => p.id === userId);
 
   switch (action) {
     case 'join':
-      if (me) return reply(i, "You're already in this party.");
-      if (q.max && q.players.length >= q.max) return reply(i, 'This party is full.');
-      q.players.push({ id: i.user.id, ready: false });
-      if (q.status === 'launched') await quest.syncAccess(client, q, i.user.id, true);
+      if (me) return reply("You're already in this party.");
+      if (q.max && q.players.length >= q.max) return reply('This party is full.');
+      q.players.push({ id: userId, ready: false });
+      if (q.status === 'launched') await quest.syncAccess(env, q, userId, true);
       break;
     case 'leave':
-      if (!me) return reply(i, "You're not in this party.");
-      if (i.user.id === q.hostId) return reply(i, "The host can't leave; use Cancel instead.");
-      q.players = q.players.filter((p) => p.id !== i.user.id);
-      if (q.status === 'launched') await quest.syncAccess(client, q, i.user.id, false);
+      if (!me) return reply("You're not in this party.");
+      if (userId === q.hostId) return reply("The host can't leave; use Cancel instead.");
+      q.players = q.players.filter((p) => p.id !== userId);
+      if (q.status === 'launched') await quest.syncAccess(env, q, userId, false);
       break;
     case 'ready':
-      if (!me) return reply(i, 'Join the party first.');
-      if (q.status !== 'open') return reply(i, 'Already launched.');
+      if (!me) return reply('Join the party first.');
+      if (q.status !== 'open') return reply('Already launched.');
       me.ready = !me.ready;
       break;
     case 'launch':
-      if (i.user.id !== q.hostId) return reply(i, 'Only the host can do that.');
-      if (q.status !== 'open') return reply(i, 'Already launched.');
-      await i.deferUpdate();
-      await quest.launch(client, q);
-      return;
+      if (userId !== q.hostId) return reply('Only the host can do that.');
+      if (q.status !== 'open') return reply('Already launched.');
+      background(ctx, env, i, quest.launch(env, q));
+      return { type: DEFER_UPDATE };
     case 'cancel':
-      if (i.user.id !== q.hostId) return reply(i, 'Only the host can do that.');
-      if (q.status !== 'open') return reply(i, 'Use /quest close in the quest channel.');
+      if (userId !== q.hostId) return reply('Only the host can do that.');
+      if (q.status !== 'open') return reply('Use /quest close in the quest channel.');
       q.status = 'cancelled';
       break;
   }
-  store.save();
+  await store.save(env, q);
 
   if (quest.shouldAutoLaunch(q)) {
-    await i.deferUpdate();
-    await quest.launch(client, q);
-    return;
+    background(ctx, env, i, quest.launch(env, q));
+    return { type: DEFER_UPDATE };
   }
-  await i.update(quest.render(q));
+  return { type: UPDATE, data: quest.render(q) };
 }
 
-client.on('interactionCreate', async (i) => {
+async function onInteraction(i, env, ctx) {
   try {
-    if (i.isChatInputCommand() && i.commandName === 'quest') await onCommand(i);
-    else if (i.isButton() && i.customId.startsWith('quest:')) await onButton(i);
+    if (i.type === COMMAND && i.data.name === 'quest') return await onCommand(i, env, ctx);
+    if (i.type === COMPONENT && i.data.custom_id.startsWith('quest:')) return await onButton(i, env, ctx);
   } catch (err) {
     console.error(err);
-    const msg = 'Something went wrong. Check that I have Manage Channels and Manage Roles permissions.';
-    if (i.deferred || i.replied) i.followUp({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => {});
-    else reply(i, msg).catch(() => {});
+    return reply(ERROR_MSG);
   }
-});
+  return reply('Unknown interaction.');
+}
 
-client.login(process.env.DISCORD_TOKEN);
+export default {
+  async fetch(request, env, ctx) {
+    if (request.method !== 'POST') return new Response('questloi');
+
+    const body = await request.text();
+    if (!(await verifyRequest(request, body, env.DISCORD_PUBLIC_KEY))) return new Response('Bad signature', { status: 401 });
+
+    const i = JSON.parse(body);
+    if (i.type === PING) return Response.json({ type: PONG });
+    return Response.json(await onInteraction(i, env, ctx));
+  },
+};

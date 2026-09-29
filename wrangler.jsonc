@@ -1,0 +1,26 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "questloi",
+	"main": "src/index.js",
+	"compatibility_date": "2025-05-21",
+	"observability": {
+		"enabled": true
+	},
+	// No id: wrangler creates the namespace on first deploy. Paste the id here afterwards.
+	"kv_namespaces": [
+		{
+			"binding": "QUEST_KV",
+			"id": "f58008d66c634021a3a76db45918e478"
+		}
+	],
+	// Do not remove vars: a deploy with missing vars wipes the live values.
+	"vars": {
+		"DISCORD_APP_ID": "1554491133567045732",
+		"DISCORD_PUBLIC_KEY": "9c3892dcd1ffe037964df85b4f8e70eeb002e796d79fa18dfeb3d519b063c0af"
+		// Secret, set with `wrangler secret put DISCORD_TOKEN`
+	}
+}

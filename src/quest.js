@@ -15,20 +15,19 @@ function embed(q) {
     const mark = q.status === 'open' ? (p.ready ? '✅' : '⏳') : '⚔️';
     return `${mark} <@${p.id}>${p.id === q.hostId ? ' (host)' : ''}`;
   });
-  const cap = q.max ? `/${q.max}` : '';
+  const cap = `/${q.max}`;
   const e = new EmbedBuilder()
     .setTitle(`🗺️ ${q.title}`)
     .setColor(COLORS[q.status])
     .setDescription(q.description || '*No description.*')
     .addFields(
-      { name: 'When', value: q.when || 'TBD — sort it out with your party', inline: true },
-      { name: 'Party size', value: `min ${q.min}${q.max ? `, max ${q.max}` : ''}`, inline: true },
+      { name: 'Party size', value: `max ${q.max}`, inline: true },
       { name: `Adventurers (${q.players.length}${cap})`, value: lines.join('\n') || '—' },
     );
 
   if (q.status === 'open') {
     e.setFooter({
-      text: `Launches automatically when ${q.min}+ players have joined and everyone is ✅ Ready.`,
+      text: `Launches automatically when the party is full (${q.max}) and everyone is ✅ Ready. The host can also launch early.`,
     });
   } else if (q.status === 'launched') {
     e.addFields({ name: 'Party channels', value: `<#${q.textChannelId}> · <#${q.voiceChannelId}>` });
@@ -83,7 +82,7 @@ function playerOverwrite(userId) {
 }
 
 function shouldAutoLaunch(q) {
-  return q.status === 'open' && q.players.length >= q.min && q.players.every((p) => p.ready);
+  return q.status === 'open' && q.max && q.players.length >= q.max && q.players.every((p) => p.ready);
 }
 
 async function launch(client, q) {
@@ -114,7 +113,6 @@ async function launch(client, q) {
 
   await text.send(
     `**${q.title}** is a go! ${q.players.map((p) => `<@${p.id}>`).join(' ')}\n` +
-      `${q.when ? `🕒 ${q.when}\n` : ''}` +
       `Sort out the details here. When the quest is done, the host (or a GM) can run \`/quest close\` to tidy these channels up.`,
   );
   await refreshBoard(client, q);

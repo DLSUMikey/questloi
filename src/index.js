@@ -19,9 +19,15 @@ const command = new SlashCommandBuilder()
       .setDescription('Post a quest and gather a party')
       .addStringOption((o) => o.setName('title').setDescription('Quest name').setRequired(true).setMaxLength(80))
       .addStringOption((o) => o.setName('description').setDescription('Hook, location, level range, etc.').setMaxLength(1000))
-      .addIntegerOption((o) => o.setName('min').setDescription('Minimum players to launch (default 3)').setMinValue(1).setMaxValue(25))
-      .addIntegerOption((o) => o.setName('max').setDescription('Party cap (default: no cap)').setMinValue(1).setMaxValue(25))
-      .addStringOption((o) => o.setName('when').setDescription('Proposed time, e.g. "Sat 7pm EST"').setMaxLength(100)),
+      .addIntegerOption((o) => o.setName('max').setDescription('Max party size (default 5)').setMinValue(1).setMaxValue(25))
+  )
+  .addSubcommand((s) =>
+    s
+      .setName('edit')
+      .setDescription('Change your quest (run in the quest channel, or anywhere for your latest open quest)')
+      .addStringOption((o) => o.setName('title').setDescription('New quest name').setMaxLength(80))
+      .addStringOption((o) => o.setName('description').setDescription('New description').setMaxLength(1000))
+      .addIntegerOption((o) => o.setName('max').setDescription('New max party size').setMinValue(1).setMaxValue(25))
   )
   .addSubcommand((s) => s.setName('close').setDescription('End this quest and delete its party channels (run inside the quest channel)'))
   .addSubcommand((s) =>
@@ -70,6 +76,31 @@ async function onCommand(i) {
     );
   }
 
+  if (sub === 'edit') {
+    const q =
+      store.byChannel(i.channelId) ??
+      Object.values(store.quests())
+        .filter((x) => x.hostId === i.user.id && x.guildId === i.guildId && x.status === 'open')
+        .pop();
+    if (!q) return reply(i, 'No open quest of yours found. Run this in a quest channel, or create a quest first.');
+    if (!isGM(i, q)) return reply(i, 'Only the host or a GM can edit this quest.');
+
+    const title = i.options.getString('title');
+    const description = i.options.getString('description');
+    const max = i.options.getInteger('max') ?? q.max;
+
+    if (max < q.players.length) return reply(i, `There are already ${q.players.length} players; max can't be lower.`);
+
+    if (title) q.title = title;
+    if (description) q.description = description;
+    q.max = max;
+    store.save();
+
+    await reply(i, `Updated **${q.title}**.`);
+    if (quest.shouldAutoLaunch(q)) return quest.launch(client, q);
+    return quest.refreshBoard(client, q);
+  }
+
   if (sub === 'close') {
     const q = store.byChannel(i.channelId);
     if (!q) return reply(i, 'Run this inside an active quest channel.');
@@ -80,9 +111,7 @@ async function onCommand(i) {
 
   // create
   const cfg = store.config(i.guildId);
-  const min = i.options.getInteger('min') ?? 3;
-  const max = i.options.getInteger('max');
-  if (max && max < min) return reply(i, "Max party size can't be lower than min.");
+  const max = i.options.getInteger('max') ?? 5;
 
   const q = {
     id: crypto.randomBytes(4).toString('hex'),
@@ -90,8 +119,6 @@ async function onCommand(i) {
     hostId: i.user.id,
     title: i.options.getString('title'),
     description: i.options.getString('description'),
-    when: i.options.getString('when'),
-    min,
     max,
     status: 'open',
     players: [{ id: i.user.id, ready: true }],

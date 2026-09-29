@@ -1,4 +1,4 @@
-# dndbot
+# questloi
 
 Discord bot for West Marches quest coordination.
 

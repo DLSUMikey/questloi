@@ -1,10 +1,10 @@
 import { api, hasPerm, P, verifyRequest } from './discord.js';
 import * as quest from './quest.js';
 import * as store from './store.js';
-import { bestWindows, SESSION_HOURS } from './schedule.js';
+import { DEFAULT_HOURS, MAX_HOURS, MIN_HOURS } from './schedule.js';
 
 const PING = 1, COMMAND = 2, COMPONENT = 3;
-const PONG = 1, MESSAGE = 4, DEFER_MESSAGE = 5, DEFER_UPDATE = 6, UPDATE = 7;
+const PONG = 1, MESSAGE = 4, DEFER_UPDATE = 6, UPDATE = 7;
 const EPHEMERAL = 64;
 
 const ERROR_MSG = 'Something went wrong. Check that I have Manage Channels and Manage Roles permissions.';
@@ -19,30 +19,6 @@ function background(ctx, env, i, work) {
       await api(env, 'POST', `/webhooks/${env.DISCORD_APP_ID}/${i.token}`, { content: ERROR_MSG, flags: EPHEMERAL }).catch(() => {});
     }),
   );
-}
-
-/** Reply publicly after the 3s deadline: acknowledge now, fill in the message when `work` resolves to text. */
-function deferredReply(ctx, env, i, work) {
-  const edit = (content) => api(env, 'PATCH', `/webhooks/${env.DISCORD_APP_ID}/${i.token}/messages/@original`, { content });
-  ctx.waitUntil(
-    work.then(edit).catch(async (err) => {
-      console.error(err);
-      await edit(ERROR_MSG).catch(() => {});
-    }),
-  );
-  return { type: DEFER_MESSAGE };
-}
-
-async function resultsText(q) {
-  const { responded, windows } = await bestWindows(q.crab.id);
-  if (!responded) return `Nobody has filled in the grid yet: ${q.crab.url}`;
-  if (!windows.length) return `${responded} responded, but nobody shares a free ${SESSION_HOURS}-hour block yet: ${q.crab.url}`;
-  const lines = windows.map((w, n) => {
-    const from = Math.floor(w.start / 1000);
-    const to = from + SESSION_HOURS * 3600;
-    return `${n + 1}. <t:${from}:F> to <t:${to}:t> (${w.names.length}/${responded}: ${w.names.join(', ')})`;
-  });
-  return `📅 **Best ${SESSION_HOURS}-hour windows for ${q.title}**\n${lines.join('\n')}\n\nGrid: ${q.crab.url}`;
 }
 
 function isGM(i, q, cfg) {
@@ -126,7 +102,7 @@ async function onCommand(i, env, ctx) {
 }
 
 async function onButton(i, env, ctx) {
-  const [, action, id] = i.data.custom_id.split(':');
+  const [, action, id, arg] = i.data.custom_id.split(':');
   const q = await store.get(env, id);
   if (!q || q.status === 'closed' || q.status === 'cancelled') return reply('This quest is no longer active.');
 
@@ -158,10 +134,28 @@ async function onButton(i, env, ctx) {
       background(ctx, env, i, quest.createSchedule(env, q));
       return { type: DEFER_UPDATE };
     }
-    case 'results':
+    case 'shorter':
+    case 'longer': {
       if (!me) return reply('Only party members can do that.');
-      if (!q.crab) return reply('Press **Find a time** first.');
-      return deferredReply(ctx, env, i, resultsText(q));
+      if (!q.crab) return reply('The availability grid is not set up yet.');
+      const hours = (q.hours ?? DEFAULT_HOURS) + (action === 'longer' ? 1 : -1);
+      q.hours = Math.min(MAX_HOURS, Math.max(MIN_HOURS, hours));
+      await store.save(env, q);
+      background(ctx, env, i, quest.refreshSchedule(env, q));
+      return { type: DEFER_UPDATE };
+    }
+    case 'refresh':
+    case 'results': // older panels used this id
+      if (!me) return reply('Only party members can do that.');
+      if (!q.crab) return reply('The availability grid is not set up yet.');
+      background(ctx, env, i, quest.refreshSchedule(env, q));
+      return { type: DEFER_UPDATE };
+    case 'confirm': {
+      if (!isGM(i, q, await store.config(env, q.guildId))) return reply('Only the host or a GM can confirm a time.');
+      if (!q.crab || !Number(arg)) return reply('That time option is no longer valid. Press Refresh.');
+      background(ctx, env, i, quest.confirm(env, q, Number(arg)));
+      return { type: DEFER_UPDATE };
+    }
     case 'launch':
       if (userId !== q.hostId) return reply('Only the host can do that.');
       if (q.status !== 'open') return reply('Already launched.');

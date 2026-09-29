@@ -7,7 +7,9 @@ const TIMEZONE = 'Asia/Manila'; // the group's timezone; slot hours below are in
 const DAYS = 14; // how far ahead the grid runs
 const FIRST_HOUR = 10; // earliest slot start
 const LAST_HOUR = 23; // latest slot start (23:00 -> midnight)
-export const SESSION_HOURS = 3; // window length used when looking for the best time
+export const DEFAULT_HOURS = 4; // default session length; the party can adjust it
+export const MIN_HOURS = 1;
+export const MAX_HOURS = 8;
 const HOUR = 3600_000;
 
 function zoneParts(epoch, tz) {
@@ -74,10 +76,10 @@ export async function createEvent(name) {
 }
 
 /**
- * Best SESSION_HOURS-long windows, by how many people are free for the whole window.
+ * Best `hours`-long windows, by how many people are free for the whole window.
  * Overlapping windows are collapsed so the top results are genuinely different options.
  */
-export async function bestWindows(eventId, limit = 3) {
+export async function bestWindows(eventId, hours = DEFAULT_HOURS, limit = 3) {
   const people = await crab('GET', `/event/${eventId}/people`);
   const free = people.map((p) => ({ name: p.name, slots: new Set(p.availability) }));
   const now = Date.now();
@@ -88,7 +90,7 @@ export async function bestWindows(eventId, limit = 3) {
   const candidates = [];
   for (const start of [...starts].sort((a, b) => a - b)) {
     if (start <= now) continue;
-    const keys = Array.from({ length: SESSION_HOURS }, (_, n) => slotKey(start + n * HOUR));
+    const keys = Array.from({ length: hours }, (_, n) => slotKey(start + n * HOUR));
     const names = free.filter((p) => keys.every((k) => p.slots.has(k))).map((p) => p.name);
     if (names.length) candidates.push({ start, names });
   }
@@ -96,8 +98,15 @@ export async function bestWindows(eventId, limit = 3) {
 
   const picked = [];
   for (const c of candidates) {
-    if (picked.every((p) => Math.abs(p.start - c.start) >= SESSION_HOURS * HOUR)) picked.push(c);
+    if (picked.every((p) => Math.abs(p.start - c.start) >= hours * HOUR)) picked.push(c);
     if (picked.length === limit) break;
   }
   return { responded: people.length, windows: picked };
 }
+
+const gcalTime = (t) => new Date(t).toISOString().replace(/[-:]|\.\d{3}/g, '');
+
+/** A "create event" link for Google Calendar; each person opens it and saves it to their own calendar. */
+export const googleCalendarUrl = ({ title, details, start, end }) =>
+  'https://calendar.google.com/calendar/render?' +
+  new URLSearchParams({ action: 'TEMPLATE', text: title, details, dates: `${gcalTime(start)}/${gcalTime(end)}` });

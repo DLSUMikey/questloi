@@ -12,6 +12,8 @@ export const P = {
   Connect: 1n << 20n,
   Speak: 1n << 21n,
   MuteMembers: 1n << 22n,
+  ManageEvents: 1n << 33n,
+  CreateEvents: 1n << 44n,
 };
 const ADMINISTRATOR = 1n << 3n;
 

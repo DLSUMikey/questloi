@@ -1,5 +1,6 @@
 import { api, bits, P } from './discord.js';
 import * as store from './store.js';
+import { createEvent } from './schedule.js';
 
 const COLORS = { open: 0x5865f2, launched: 0x57f287, cancelled: 0x808080, closed: 0x808080 };
 const PRIMARY = 1, SECONDARY = 2, SUCCESS = 3, DANGER = 4;
@@ -103,7 +104,9 @@ export async function launch(env, q) {
   await api(env, 'POST', `/channels/${text.id}/messages`, {
     content:
       `**${q.title}** is a go! ${q.players.map((p) => `<@${p.id}>`).join(' ')}\n` +
-      `Sort out the details here. When the quest is done, the host (or a GM) can run \`/quest close\` to tidy these channels up.`,
+      `Sort out the details here. Press **Find a time** to get an availability grid for the next two weeks. ` +
+      `When the quest is done, the host (or a GM) can run \`/quest close\` to tidy these channels up.`,
+    components: [{ type: 1, components: [button(q, 'findtime', '📅 Find a time', SUCCESS)] }],
   });
   await refreshBoard(env, q);
 }
@@ -118,6 +121,18 @@ export async function teardown(env, q) {
   q.status = 'closed';
   await store.save(env, q);
   await refreshBoard(env, q);
+}
+
+/** Create the availability grid and post it (with a results button) in the party channel. */
+export async function createSchedule(env, q, timezone) {
+  q.crab = await createEvent(q.title, timezone);
+  await store.save(env, q);
+  await api(env, 'POST', `/channels/${q.textChannelId}/messages`, {
+    content:
+      `📅 **Availability for ${q.title}**\n${q.crab.url}\n` +
+      `Open the link, enter your name, and drag over the hours you're free. Press **Check results** once everyone has filled it in.`,
+    components: [{ type: 1, components: [button(q, 'results', 'Check results', PRIMARY)] }],
+  });
 }
 
 /** Give or remove a player's access to already-launched channels. */

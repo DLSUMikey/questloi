@@ -1,9 +1,10 @@
 import { api, hasPerm, P, verifyRequest } from './discord.js';
 import * as quest from './quest.js';
 import * as store from './store.js';
+import { bestWindows, isValidTimezone, SESSION_HOURS } from './schedule.js';
 
 const PING = 1, COMMAND = 2, COMPONENT = 3;
-const PONG = 1, MESSAGE = 4, DEFER_UPDATE = 6, UPDATE = 7;
+const PONG = 1, MESSAGE = 4, DEFER_MESSAGE = 5, DEFER_UPDATE = 6, UPDATE = 7;
 const EPHEMERAL = 64;
 
 const ERROR_MSG = 'Something went wrong. Check that I have Manage Channels and Manage Roles permissions.';
@@ -18,6 +19,30 @@ function background(ctx, env, i, work) {
       await api(env, 'POST', `/webhooks/${env.DISCORD_APP_ID}/${i.token}`, { content: ERROR_MSG, flags: EPHEMERAL }).catch(() => {});
     }),
   );
+}
+
+/** Reply publicly after the 3s deadline: acknowledge now, fill in the message when `work` resolves to text. */
+function deferredReply(ctx, env, i, work) {
+  const edit = (content) => api(env, 'PATCH', `/webhooks/${env.DISCORD_APP_ID}/${i.token}/messages/@original`, { content });
+  ctx.waitUntil(
+    work.then(edit).catch(async (err) => {
+      console.error(err);
+      await edit(ERROR_MSG).catch(() => {});
+    }),
+  );
+  return { type: DEFER_MESSAGE };
+}
+
+async function resultsText(q) {
+  const { responded, windows } = await bestWindows(q.crab.id);
+  if (!responded) return `Nobody has filled in the grid yet: ${q.crab.url}`;
+  if (!windows.length) return `${responded} responded, but nobody shares a free ${SESSION_HOURS}-hour block yet: ${q.crab.url}`;
+  const lines = windows.map((w, n) => {
+    const from = Math.floor(w.start / 1000);
+    const to = from + SESSION_HOURS * 3600;
+    return `${n + 1}. <t:${from}:F> to <t:${to}:t> (${w.names.length}/${responded}: ${w.names.join(', ')})`;
+  });
+  return `📅 **Best ${SESSION_HOURS}-hour windows for ${q.title}**\n${lines.join('\n')}\n\nGrid: ${q.crab.url}`;
 }
 
 function isGM(i, q, cfg) {
@@ -38,10 +63,15 @@ async function onCommand(i, env, ctx) {
     const cfg = await store.config(env, i.guild_id);
     if (opts.board) cfg.boardChannelId = opts.board;
     if (opts.gm_role) cfg.gmRoleId = opts.gm_role;
+    if (opts.timezone) {
+      if (!isValidTimezone(opts.timezone)) return reply(`"${opts.timezone}" isn't a valid timezone. Use a name like America/New_York or Asia/Manila.`);
+      cfg.timezone = opts.timezone;
+    }
     await store.saveConfig(env, i.guild_id, cfg);
     return reply(
       `Board: ${cfg.boardChannelId ? `<#${cfg.boardChannelId}>` : 'wherever /quest create is used'}\n` +
-        `GM role: ${cfg.gmRoleId ? `<@&${cfg.gmRoleId}>` : 'none'}`,
+        `GM role: ${cfg.gmRoleId ? `<@&${cfg.gmRoleId}>` : 'none'}\n` +
+        `Timezone: ${cfg.timezone ?? 'not set (needed for scheduling)'}`,
     );
   }
 
@@ -126,6 +156,19 @@ async function onButton(i, env, ctx) {
       if (q.status !== 'open') return reply('Already launched.');
       me.ready = !me.ready;
       break;
+    case 'findtime': {
+      if (!me) return reply('Only party members can do that.');
+      if (q.status !== 'launched') return reply('This quest has no party channel.');
+      if (q.crab) return reply(`The availability grid already exists: ${q.crab.url}`);
+      const cfg = await store.config(env, q.guildId);
+      if (!cfg.timezone) return reply('An admin needs to run `/quest setup timezone:<your timezone>` first, e.g. America/New_York.');
+      background(ctx, env, i, quest.createSchedule(env, q, cfg.timezone));
+      return { type: DEFER_UPDATE };
+    }
+    case 'results':
+      if (!me) return reply('Only party members can do that.');
+      if (!q.crab) return reply('Press **Find a time** first.');
+      return deferredReply(ctx, env, i, resultsText(q));
     case 'launch':
       if (userId !== q.hostId) return reply('Only the host can do that.');
       if (q.status !== 'open') return reply('Already launched.');

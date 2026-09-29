@@ -3,6 +3,7 @@
 const CRAB_API = 'https://api.crab.fit';
 export const CRAB_URL = 'https://crab.fit';
 
+export const DEFAULT_TIMEZONE = 'Asia/Singapore'; // used until /quest setup sets one
 const DAYS = 14; // how far ahead the grid runs
 const FIRST_HOUR = 10; // earliest slot start, in the guild's timezone
 const LAST_HOUR = 23; // latest slot start (23:00 -> midnight)

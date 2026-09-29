@@ -1,7 +1,7 @@
 import { api, hasPerm, P, verifyRequest } from './discord.js';
 import * as quest from './quest.js';
 import * as store from './store.js';
-import { bestWindows, isValidTimezone, SESSION_HOURS } from './schedule.js';
+import { bestWindows, DEFAULT_TIMEZONE, isValidTimezone, SESSION_HOURS } from './schedule.js';
 
 const PING = 1, COMMAND = 2, COMPONENT = 3;
 const PONG = 1, MESSAGE = 4, DEFER_MESSAGE = 5, DEFER_UPDATE = 6, UPDATE = 7;
@@ -71,7 +71,7 @@ async function onCommand(i, env, ctx) {
     return reply(
       `Board: ${cfg.boardChannelId ? `<#${cfg.boardChannelId}>` : 'wherever /quest create is used'}\n` +
         `GM role: ${cfg.gmRoleId ? `<@&${cfg.gmRoleId}>` : 'none'}\n` +
-        `Timezone: ${cfg.timezone ?? 'not set (needed for scheduling)'}`,
+        `Timezone: ${cfg.timezone ?? `${DEFAULT_TIMEZONE} (default)`}`,
     );
   }
 
@@ -161,8 +161,7 @@ async function onButton(i, env, ctx) {
       if (q.status !== 'launched') return reply('This quest has no party channel.');
       if (q.crab) return reply(`The availability grid already exists: ${q.crab.url}`);
       const cfg = await store.config(env, q.guildId);
-      if (!cfg.timezone) return reply('An admin needs to run `/quest setup timezone:<your timezone>` first, e.g. America/New_York.');
-      background(ctx, env, i, quest.createSchedule(env, q, cfg.timezone));
+      background(ctx, env, i, quest.createSchedule(env, q, cfg.timezone ?? DEFAULT_TIMEZONE));
       return { type: DEFER_UPDATE };
     }
     case 'results':
